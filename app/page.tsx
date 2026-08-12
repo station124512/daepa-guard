@@ -27,6 +27,20 @@ export default function Home() {
   const [diaryLogs, setDiaryLogs] = useState<string[]>([]);
   const recognitionRef = useRef<any>(null);
 
+  // 💡 [신규 추가] 카카오톡 공유하기 기능을 위한 SDK 동적 로드
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = 'https://t1.kakaocdn.net/kakao_js_sdk/2.7.2/kakao.min.js';
+    script.async = true;
+    document.head.appendChild(script);
+    script.onload = () => {
+      // 카카오 SDK 초기화 (앱 키 이식)
+      if (!(window as any).Kakao.isInitialized()) {
+        (window as any).Kakao.init(process.env.NEXT_PUBLIC_KAKAO_APP_KEY);
+      }
+    };
+  }, []);
+
   const sectorPaths = {
     'A (샘플)': [
       { lat: 35.0940, lng: 126.3820 }, { lat: 35.0940, lng: 126.3830 },
@@ -81,24 +95,62 @@ export default function Home() {
       });
   };
 
+  // 💡 [신규 추가] 카카오톡 실시간 현장 공유 함수
+  const handleKakaoShare = () => {
+    if (!(window as any).Kakao || !(window as any).Kakao.isInitialized()) {
+      alert("카카오톡 공유 기능을 불러오는 중입니다. 잠시 후 다시 시도해주세요.");
+      return;
+    }
+    
+    (window as any).Kakao.Share.sendDefault({
+      objectType: 'feed',
+      content: {
+        title: `🚜 [긴급] ${activeSector} 방제 관제 보고`,
+        description: `현재 기온: ${data?.weather?.temp}°C | 습도: ${data?.weather?.humidity}%\n잡초 위험도: ${data?.riskScore}점\n\n* AI 조언: ${data?.recommendation}`,
+        imageUrl: 'https://images.unsplash.com/photo-1592982537447-6f26487e4726?auto=format&fit=crop&q=80&w=800',
+        link: {
+          mobileWebUrl: window.location.href,
+          webUrl: window.location.href,
+        },
+      },
+      buttons: [
+        {
+          title: '스마트 관제탑으로 즉시 이동',
+          link: {
+            mobileWebUrl: window.location.href,
+            webUrl: window.location.href,
+          },
+        },
+      ],
+    });
+  };
+
+  // 💡 [신규 추가] 기상청 단기예보 UI를 위한 예측 데이터 (공공데이터 연동 전 목업)
+  const generateForecast = () => {
+    if (!data) return [];
+    const baseTemp = parseFloat(data.weather?.temp || "25.0");
+    return [
+      { time: '3시간 뒤', temp: (baseTemp - 1.2).toFixed(1), icon: '⛅', desc: '구름조금' },
+      { time: '6시간 뒤', temp: (baseTemp - 2.5).toFixed(1), icon: '🌧️', desc: '강수 60%' },
+      { time: '9시간 뒤', temp: (baseTemp - 3.1).toFixed(1), icon: '☔', desc: '강수 80%' },
+    ];
+  };
+
   const handleAddressSearch = () => {
     if (!searchAddress.trim()) return;
     if (!(window as any).kakao || !(window as any).kakao.maps || !(window as any).kakao.maps.services) {
       alert("지도 서비스를 불러오는 중입니다. 잠시 후 다시 시도해주세요.");
       return;
     }
-
     const geocoder = new (window as any).kakao.maps.services.Geocoder();
     geocoder.addressSearch(searchAddress, function(result: any, status: any) {
       if (status === (window as any).kakao.maps.services.Status.OK) {
         const lat = parseFloat(result[0].y);
         const lng = parseFloat(result[0].x);
-
         setMapCenter({ lat, lng });
         setMyLocation({ lat, lng });
         setActiveSector(`검색: ${searchAddress.substring(0, 8)}...`);
         setTimeout(() => setMapLevel(1), 600);
-        
         setLoading(true);
         fetchWeatherData(lat, lng, '검색된 농장');
       } else {
@@ -133,7 +185,6 @@ export default function Home() {
     );
   };
 
-  // 💡 [신규 추가] 카카오 로드뷰 창을 여는 함수
   const openRoadview = () => {
     if (!mapCenter) return;
     const url = `https://map.kakao.com/link/roadview/${mapCenter.lat},${mapCenter.lng}`;
@@ -193,8 +244,8 @@ export default function Home() {
         </div>
 
         <div className="p-6">
+          {/* 지도 영역 */}
           <div className="mb-8 border-4 border-green-100 rounded-2xl overflow-hidden shadow-inner relative">
-            
             <div className="absolute top-4 left-4 right-4 z-10 flex gap-2 shadow-lg">
               <input 
                 type="text"
@@ -217,56 +268,28 @@ export default function Home() {
             ) : mapError ? (
               <div className="h-80 bg-red-50 flex items-center justify-center font-bold text-red-500">지도 로드 실패</div>
             ) : (
-              <Map
-                center={mapCenter}
-                isPanto={true} 
-                style={{ width: "100%", height: "450px" }} 
-                level={mapLevel} 
-                mapTypeId={3}
-              >
+              <Map center={mapCenter} isPanto={true} style={{ width: "100%", height: "450px" }} level={mapLevel} mapTypeId={3}>
                 {(Object.keys(sectorPaths) as Array<keyof typeof sectorPaths>).map((sector) => {
                   const isCompleted = completedSectors.includes(sector);
                   const isActive = activeSector === sector;
-
                   return (
                     <div key={sector}>
                       <Polygon
-                        path={sectorPaths[sector]}
-                        strokeWeight={3}
+                        path={sectorPaths[sector]} strokeWeight={3}
                         strokeColor={isCompleted ? "#2563EB" : (isActive ? "#FF0000" : "#00FF00")}
-                        strokeOpacity={0.9}
-                        strokeStyle="solid"
+                        strokeOpacity={0.9} strokeStyle="solid"
                         fillColor={isCompleted ? "#3B82F6" : (isActive ? "#FF0000" : "#00FF00")}
                         fillOpacity={isActive ? 0.4 : 0.25}
-                        onClick={() => { 
-                          setActiveSector(sector); 
-                          setMapCenter(sectorCenters[sector]); 
-                          setMapLevel(4);
-                          setActionLog(null); 
-                        }}
+                        onClick={() => { setActiveSector(sector); setMapCenter(sectorCenters[sector]); setMapLevel(4); setActionLog(null); }}
                       />
                       <CustomOverlayMap position={sectorCenters[sector]}>
-                        <div 
-                          className={`px-4 py-2 rounded-full font-black text-xs shadow-lg cursor-pointer ${
-                            isCompleted ? 'bg-blue-600 text-white border-2 border-white' : 
-                            isActive ? 'bg-red-500 text-white transform scale-110' : 'bg-green-600 text-white'
-                          }`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setActiveSector(sector);
-                            setMapCenter(sectorCenters[sector]);
-                            setMapLevel(4);
-                            setActionLog(null);
-                          }}
-                        >
+                        <div className={`px-4 py-2 rounded-full font-black text-xs shadow-lg cursor-pointer ${isCompleted ? 'bg-blue-600 text-white border-2 border-white' : isActive ? 'bg-red-500 text-white transform scale-110' : 'bg-green-600 text-white'}`} onClick={(e) => { e.stopPropagation(); setActiveSector(sector); setMapCenter(sectorCenters[sector]); setMapLevel(4); setActionLog(null); }}>
                           {isCompleted ? `✅ ${sector} 완료` : sector}
                         </div>
                       </CustomOverlayMap>
                     </div>
                   );
                 })}
-
-                {/* 💡 [핵심 수정] 거슬리던 마커 텍스트를 빼고 깔끔하게 깜빡이는 빨간 점으로 변경! */}
                 {myLocation && (
                   <CustomOverlayMap position={myLocation}>
                     <div className="w-5 h-5 bg-red-500 rounded-full border-4 border-white shadow-lg animate-pulse" />
@@ -275,28 +298,20 @@ export default function Home() {
               </Map>
             )}
 
-            {/* 💡 [신규 추가] 지도 우측 하단 버튼 모음 (로드뷰 + 내 위치) */}
             <div className="absolute bottom-4 right-4 z-10 flex flex-col gap-2">
-              <button 
-                onClick={openRoadview}
-                className="bg-white hover:bg-gray-50 border-2 border-indigo-500 text-indigo-700 px-4 py-3 rounded-2xl text-sm font-black shadow-2xl flex items-center justify-center gap-2 transition-transform transform hover:scale-105 active:scale-95"
-              >
+              <button onClick={openRoadview} className="bg-white hover:bg-gray-50 border-2 border-indigo-500 text-indigo-700 px-4 py-3 rounded-2xl text-sm font-black shadow-2xl flex items-center justify-center gap-2 transition-transform transform hover:scale-105 active:scale-95">
                 🛣️ 주변 로드뷰 보기
               </button>
-              <button 
-                onClick={handleGpsSearch}
-                disabled={isGpsLoading}
-                className="bg-white hover:bg-gray-50 border-2 border-blue-500 text-blue-700 px-4 py-3 rounded-2xl text-sm font-black shadow-2xl flex items-center justify-center gap-2 transition-transform transform hover:scale-105 active:scale-95"
-              >
+              <button onClick={handleGpsSearch} disabled={isGpsLoading} className="bg-white hover:bg-gray-50 border-2 border-blue-500 text-blue-700 px-4 py-3 rounded-2xl text-sm font-black shadow-2xl flex items-center justify-center gap-2 transition-transform transform hover:scale-105 active:scale-95">
                 {isGpsLoading ? '📡 GPS 연결 중...' : '🎯 내 위치로 이동 (GPS)'}
               </button>
             </div>
           </div>
 
-          {/* 이하 코드 동일 (데이터 및 음성 일지) */}
           {data && (
             <>
-              <div className="grid grid-cols-3 gap-4 text-center mb-8 bg-green-100/50 rounded-2xl p-5 border border-green-100">
+              {/* 날씨 정보 */}
+              <div className="grid grid-cols-3 gap-4 text-center mb-6 bg-green-100/50 rounded-2xl p-5 border border-green-100">
                 <div>
                   <p className="text-sm font-semibold text-gray-500 mb-1">현재 기온</p>
                   <p className="text-2xl font-black text-gray-800">{data.weather?.temp ?? '-'}°C</p>
@@ -311,6 +326,25 @@ export default function Home() {
                 </div>
               </div>
 
+              {/* 💡 [신규 추가] 기상청 단기 예보 섹션 */}
+              <div className="mb-8">
+                <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+                  🌦️ 단기 기상 예보 (강수 예측)
+                </h2>
+                <div className="bg-gradient-to-r from-blue-50 to-blue-100 p-6 rounded-2xl border border-blue-200 shadow-sm flex justify-between">
+                  {generateForecast().map((forecast, idx) => (
+                    <div key={idx} className="flex flex-col items-center flex-1 border-r border-blue-200 last:border-0">
+                      <span className="text-sm font-bold text-blue-800 mb-2">{forecast.time}</span>
+                      <span className="text-3xl mb-1">{forecast.icon}</span>
+                      <span className="text-lg font-black text-gray-800">{forecast.temp}°C</span>
+                      <span className="text-sm font-semibold text-gray-600">{forecast.desc}</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-right text-gray-400 mt-2">* 공공데이터포털 연동 전 시뮬레이션 모드입니다.</p>
+              </div>
+
+              {/* 전문가 조언 */}
               <div className="mb-8">
                 <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">🤖 AI 농업 전문가 조언</h2>
                 <div className="text-gray-700 leading-relaxed whitespace-pre-line bg-gray-50 p-6 rounded-2xl border border-gray-200 text-lg shadow-sm">
@@ -320,6 +354,25 @@ export default function Home() {
             </>
           )}
 
+          {/* 방제 보고 및 카카오톡 공유 */}
+          <div className="border-t-2 border-dashed border-gray-200 pt-8 mt-8 text-center flex flex-col gap-4">
+            {completedSectors.includes(activeSector) ? (
+              <div className="w-full md:w-auto bg-blue-100 border-2 border-blue-500 text-blue-800 font-bold py-4 px-12 rounded-2xl text-xl shadow-inner mx-auto inline-block">
+                ✅ {activeSector} 방제 완료
+              </div>
+            ) : (
+              <button onClick={handleAction} className="w-full md:w-auto bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-12 rounded-2xl text-xl shadow-lg transition-transform mx-auto">
+                🚜 {activeSector} 방제 완료 보고
+              </button>
+            )}
+            
+            {/* 💡 [신규 추가] 카카오톡 실시간 공유 버튼 */}
+            <button onClick={handleKakaoShare} className="w-full md:w-auto bg-[#FEE500] hover:bg-[#F4DC00] text-black font-extrabold py-4 px-12 rounded-2xl text-xl shadow-lg transition-transform transform hover:scale-105 active:scale-95 mx-auto flex items-center justify-center gap-3">
+              <span className="text-2xl">💬</span> 카카오톡으로 현장 공유하기
+            </button>
+          </div>
+
+          {/* AI 음성 영농 일지 섹션 */}
           <div className="border-t-2 border-dashed border-gray-200 pt-8 mt-8 text-center">
             <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center justify-center gap-2">
               🎙️ AI 스마트 영농 일지
@@ -328,22 +381,18 @@ export default function Home() {
               <button
                 onClick={handleVoiceRecord}
                 className={`w-full py-4 px-6 rounded-2xl font-black text-white text-lg transition-all shadow-lg flex items-center justify-center gap-3 mb-4 ${
-                  isRecording 
-                    ? 'bg-red-500 hover:bg-red-600 animate-pulse' 
-                    : 'bg-indigo-600 hover:bg-indigo-700 transform hover:scale-105 active:scale-95'
+                  isRecording ? 'bg-red-500 hover:bg-red-600 animate-pulse' : 'bg-indigo-600 hover:bg-indigo-700 transform hover:scale-105 active:scale-95'
                 }`}
               >
                 {isRecording ? '🔴 마이크 끄기 (말씀하세요...)' : '🎙️ 음성으로 일지 쓰기'}
               </button>
               <textarea 
-                value={voiceText}
-                onChange={(e) => setVoiceText(e.target.value)}
+                value={voiceText} onChange={(e) => setVoiceText(e.target.value)}
                 placeholder="마이크 버튼을 누르고 '오늘 잡초 뽑고 농약 2통 살포 완료' 라고 말해보세요."
                 className="w-full p-4 rounded-xl border-2 border-indigo-200 focus:border-indigo-500 outline-none resize-none h-24 text-gray-700 font-medium mb-4 shadow-inner bg-white"
               />
               <button 
-                onClick={saveDiary}
-                disabled={!voiceText.trim()}
+                onClick={saveDiary} disabled={!voiceText.trim()}
                 className="w-full bg-gray-800 hover:bg-black text-white font-bold py-4 rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-md"
               >
                 💾 {activeSector} 작업 일지 저장하기
@@ -356,9 +405,7 @@ export default function Home() {
                 </h3>
                 <ul className="space-y-3">
                   {diaryLogs.map((log, idx) => (
-                    <li key={idx} className="bg-white px-4 py-3 rounded-xl border-l-4 border-indigo-500 shadow-sm text-gray-700 font-medium">
-                      {log}
-                    </li>
+                    <li key={idx} className="bg-white px-4 py-3 rounded-xl border-l-4 border-indigo-500 shadow-sm text-gray-700 font-medium">{log}</li>
                   ))}
                 </ul>
               </div>

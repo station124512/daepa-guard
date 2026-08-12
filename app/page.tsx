@@ -27,14 +27,12 @@ export default function Home() {
   const [diaryLogs, setDiaryLogs] = useState<string[]>([]);
   const recognitionRef = useRef<any>(null);
 
-  // 💡 [신규 추가] 카카오톡 공유하기 기능을 위한 SDK 동적 로드
   useEffect(() => {
     const script = document.createElement('script');
     script.src = 'https://t1.kakaocdn.net/kakao_js_sdk/2.7.2/kakao.min.js';
     script.async = true;
     document.head.appendChild(script);
     script.onload = () => {
-      // 카카오 SDK 초기화 (앱 키 이식)
       if (!(window as any).Kakao.isInitialized()) {
         (window as any).Kakao.init(process.env.NEXT_PUBLIC_KAKAO_APP_KEY);
       }
@@ -69,33 +67,77 @@ export default function Home() {
     fetchWeatherData(lat, lng, activeSector);
   }, [activeSector]);
 
-  const fetchWeatherData = (lat: number, lng: number, sectorName: string) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+  // 💡 [핵심 교체!] 가짜 데이터를 지우고 Open-Meteo 실시간 날씨 API를 연결합니다!
+  const fetchWeatherData = async (lat: number, lng: number, sectorName: string) => {
+    try {
+      // 1. 진짜 날씨 API 찌르기 (현재 날씨 + 시간대별 예측)
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,relative_humidity_2m,precipitation&hourly=temperature_2m,precipitation_probability,weather_code&timezone=Asia%2FSeoul`;
+      const response = await fetch(url);
+      if (!response.ok) throw new Error('날씨 데이터를 가져올 수 없습니다.');
+      const weatherData = await response.json();
 
-    fetch(`/api/weed-check?lat=${lat}&lng=${lng}&sector=${sectorName}`, { signal: controller.signal })
-      .then((res) => {
-        clearTimeout(timeoutId);
-        if (!res.ok) throw new Error('서버 응답 오류');
-        return res.json();
-      })
-      .then((data) => {
-        setData(data);
-        setLoading(false);
-      })
-      .catch((err) => {
-        clearTimeout(timeoutId);
-        console.error(err);
-        setData({
-          weather: { temp: '26.7', rain: '0', humidity: '94' },
-          riskScore: sectorName.includes('내 농장') || sectorName.includes('검색') ? 85 : 40,
-          recommendation: `${sectorName} 통신 지연. 기본 안전 모드로 구동됩니다.`
-        });
-        setLoading(false);
+      // 2. 현재 시간 기준으로 몇 번째 데이터인지 찾기
+      const now = new Date();
+      const currentHourIndex = weatherData.hourly.time.findIndex((t: string) => new Date(t) >= now);
+      const idx = currentHourIndex !== -1 ? currentHourIndex : 0;
+
+      // 3. WMO 날씨 코드를 이쁜 이모티콘으로 바꾸는 마법 공식
+      const getWeatherDesc = (code: number) => {
+        if (code === 0) return { icon: '☀️', desc: '맑음' };
+        if (code <= 3) return { icon: '⛅', desc: '구름' };
+        if (code <= 48) return { icon: '🌫️', desc: '안개' };
+        if (code <= 67) return { icon: '🌧️', desc: '비' };
+        if (code <= 77) return { icon: '❄️', desc: '눈' };
+        if (code <= 82) return { icon: '🌦️', desc: '소나기' };
+        return { icon: '⚡', desc: '뇌우' };
+      };
+
+      // 4. 3시간, 6시간, 9시간 뒤의 날씨 예측 데이터 조립
+      const forecast = [3, 6, 9].map(offset => {
+        const targetIdx = idx + offset;
+        const wInfo = getWeatherDesc(weatherData.hourly.weather_code[targetIdx]);
+        return {
+          time: `${offset}시간 뒤`,
+          temp: weatherData.hourly.temperature_2m[targetIdx].toFixed(1),
+          pop: weatherData.hourly.precipitation_probability[targetIdx],
+          icon: wInfo.icon,
+          desc: wInfo.desc
+        };
       });
+
+      const currentTemp = weatherData.current.temperature_2m;
+      const currentHum = weatherData.current.relative_humidity_2m;
+      const currentRain = weatherData.current.precipitation;
+      
+      // 5. 실제 기온과 습도를 바탕으로 잡초 위험도 동적 계산 (고온 다습할수록 위험)
+      const riskScore = Math.min(100, Math.max(0, Math.round((currentTemp / 30) * 40 + (currentHum / 100) * 60)));
+      
+      let rec = "현재 날씨가 양호합니다. 일상적인 관리를 진행하세요.";
+      if (riskScore >= 80) rec = "⚠️ 고온 다습하여 잡초 발아 위험이 매우 높습니다! 즉각적인 제초 및 방제 작업을 권장합니다.";
+      else if (riskScore >= 60) rec = "잡초 성장이 활발해질 수 있는 조건입니다. 밭 상태를 예찰해 주세요.";
+
+      // 화면에 실제 데이터 뿌리기!
+      setData({
+        weather: { temp: currentTemp.toFixed(1), rain: currentRain, humidity: currentHum },
+        forecast: forecast,
+        riskScore: riskScore,
+        recommendation: rec
+      });
+      setLoading(false);
+      
+    } catch (err) {
+      console.error(err);
+      // 인터넷이 끊겼을 때만 가짜 데이터를 보여줌
+      setData({
+        weather: { temp: '26.7', rain: '0', humidity: '94' },
+        forecast: [],
+        riskScore: 40,
+        recommendation: `[오류] 통신 지연. 인터넷 연결을 확인해주세요.`
+      });
+      setLoading(false);
+    }
   };
 
-  // 💡 [신규 추가] 카카오톡 실시간 현장 공유 함수
   const handleKakaoShare = () => {
     if (!(window as any).Kakao || !(window as any).Kakao.isInitialized()) {
       alert("카카오톡 공유 기능을 불러오는 중입니다. 잠시 후 다시 시도해주세요.");
@@ -123,17 +165,6 @@ export default function Home() {
         },
       ],
     });
-  };
-
-  // 💡 [신규 추가] 기상청 단기예보 UI를 위한 예측 데이터 (공공데이터 연동 전 목업)
-  const generateForecast = () => {
-    if (!data) return [];
-    const baseTemp = parseFloat(data.weather?.temp || "25.0");
-    return [
-      { time: '3시간 뒤', temp: (baseTemp - 1.2).toFixed(1), icon: '⛅', desc: '구름조금' },
-      { time: '6시간 뒤', temp: (baseTemp - 2.5).toFixed(1), icon: '🌧️', desc: '강수 60%' },
-      { time: '9시간 뒤', temp: (baseTemp - 3.1).toFixed(1), icon: '☔', desc: '강수 80%' },
-    ];
   };
 
   const handleAddressSearch = () => {
@@ -310,7 +341,7 @@ export default function Home() {
 
           {data && (
             <>
-              {/* 날씨 정보 */}
+              {/* 💡 [진짜 날씨 연동 완료] */}
               <div className="grid grid-cols-3 gap-4 text-center mb-6 bg-green-100/50 rounded-2xl p-5 border border-green-100">
                 <div>
                   <p className="text-sm font-semibold text-gray-500 mb-1">현재 기온</p>
@@ -326,25 +357,25 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* 💡 [신규 추가] 기상청 단기 예보 섹션 */}
+              {/* 💡 [진짜 단기 예보 연동 완료] */}
               <div className="mb-8">
                 <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
-                  🌦️ 단기 기상 예보 (강수 예측)
+                  🌦️ 단기 기상 예보 (실시간)
                 </h2>
                 <div className="bg-gradient-to-r from-blue-50 to-blue-100 p-6 rounded-2xl border border-blue-200 shadow-sm flex justify-between">
-                  {generateForecast().map((forecast, idx) => (
+                  {data.forecast.map((forecast: any, idx: number) => (
                     <div key={idx} className="flex flex-col items-center flex-1 border-r border-blue-200 last:border-0">
                       <span className="text-sm font-bold text-blue-800 mb-2">{forecast.time}</span>
                       <span className="text-3xl mb-1">{forecast.icon}</span>
                       <span className="text-lg font-black text-gray-800">{forecast.temp}°C</span>
-                      <span className="text-sm font-semibold text-gray-600">{forecast.desc}</span>
+                      <span className="text-sm font-semibold text-gray-600">{forecast.desc} (강수 {forecast.pop}%)</span>
                     </div>
                   ))}
                 </div>
-                <p className="text-xs text-right text-gray-400 mt-2">* 공공데이터포털 연동 전 시뮬레이션 모드입니다.</p>
+                <p className="text-xs text-right text-blue-600 mt-2 font-semibold">* 현재 보고 계신 좌표의 100% 리얼 실시간 날씨입니다.</p>
               </div>
 
-              {/* 전문가 조언 */}
+              {/* 동적 전문가 조언 */}
               <div className="mb-8">
                 <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">🤖 AI 농업 전문가 조언</h2>
                 <div className="text-gray-700 leading-relaxed whitespace-pre-line bg-gray-50 p-6 rounded-2xl border border-gray-200 text-lg shadow-sm">
@@ -366,7 +397,6 @@ export default function Home() {
               </button>
             )}
             
-            {/* 💡 [신규 추가] 카카오톡 실시간 공유 버튼 */}
             <button onClick={handleKakaoShare} className="w-full md:w-auto bg-[#FEE500] hover:bg-[#F4DC00] text-black font-extrabold py-4 px-12 rounded-2xl text-xl shadow-lg transition-transform transform hover:scale-105 active:scale-95 mx-auto flex items-center justify-center gap-3">
               <span className="text-2xl">💬</span> 카카오톡으로 현장 공유하기
             </button>

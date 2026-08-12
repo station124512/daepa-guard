@@ -6,7 +6,6 @@ import { Map, Polygon, CustomOverlayMap, MapMarker, useKakaoLoader } from 'react
 export default function Home() {
   const [mapLoading, mapError] = useKakaoLoader({
     appkey: process.env.NEXT_PUBLIC_KAKAO_APP_KEY as string,
-    // 💡 [핵심 추가] 카카오 주소 검색 엔진(services)을 불러옵니다!
     libraries: ['services'], 
   });
 
@@ -21,7 +20,6 @@ export default function Home() {
   const [isGpsLoading, setIsGpsLoading] = useState(false);
   const [mapLevel, setMapLevel] = useState(4); 
 
-  // 💡 [신규 추가] 주소 검색용 상태 변수
   const [searchAddress, setSearchAddress] = useState("");
 
   const [isRecording, setIsRecording] = useState(false);
@@ -83,35 +81,28 @@ export default function Home() {
       });
   };
 
-  // 💡 [핵심 기능] 주소를 입력하면 좌표로 변환해서 지도를 이동시키는 함수
   const handleAddressSearch = () => {
     if (!searchAddress.trim()) return;
-
-    // 카카오맵 API가 로드되었는지 확인
     if (!(window as any).kakao || !(window as any).kakao.maps || !(window as any).kakao.maps.services) {
       alert("지도 서비스를 불러오는 중입니다. 잠시 후 다시 시도해주세요.");
       return;
     }
 
     const geocoder = new (window as any).kakao.maps.services.Geocoder();
-
-    // 주소로 좌표를 검색합니다
     geocoder.addressSearch(searchAddress, function(result: any, status: any) {
       if (status === (window as any).kakao.maps.services.Status.OK) {
         const lat = parseFloat(result[0].y);
         const lng = parseFloat(result[0].x);
 
-        setMapCenter({ lat, lng }); // 지도 카메라 이동
-        setMyLocation({ lat, lng }); // 빨간 핀 꽂기
-        setActiveSector(`검색: ${searchAddress.substring(0, 8)}...`); // 구역 이름 변경
-        
-        // 검색된 곳으로 부드럽게 줌인!
+        setMapCenter({ lat, lng });
+        setMyLocation({ lat, lng });
+        setActiveSector(`검색: ${searchAddress.substring(0, 8)}...`);
         setTimeout(() => setMapLevel(1), 600);
         
         setLoading(true);
         fetchWeatherData(lat, lng, '검색된 농장');
       } else {
-        alert("주소를 찾을 수 없습니다. 시/군/구 동/면/리를 포함한 정확한 주소를 입력해주세요.");
+        alert("주소를 찾을 수 없습니다. 정확한 주소를 입력해주세요.");
       }
     });
   };
@@ -121,18 +112,15 @@ export default function Home() {
       alert("GPS를 지원하지 않는 브라우저입니다.");
       return;
     }
-
     setIsGpsLoading(true);
     navigator.geolocation.getCurrentPosition(
       (position) => {
         const lat = position.coords.latitude;
         const lng = position.coords.longitude;
-        
         setMapCenter({ lat, lng }); 
         setMyLocation({ lat, lng }); 
         setActiveSector('내 농장(GPS)'); 
         setTimeout(() => setMapLevel(1), 600);
-        
         setLoading(true);
         fetchWeatherData(lat, lng, '내 농장(GPS)');
         setIsGpsLoading(false);
@@ -143,6 +131,13 @@ export default function Home() {
       },
       { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
     );
+  };
+
+  // 💡 [신규 추가] 카카오 로드뷰 창을 여는 함수
+  const openRoadview = () => {
+    if (!mapCenter) return;
+    const url = `https://map.kakao.com/link/roadview/${mapCenter.lat},${mapCenter.lng}`;
+    window.open(url, '_blank');
   };
 
   const handleAction = () => {
@@ -158,19 +153,16 @@ export default function Home() {
       setIsRecording(false);
       return;
     }
-
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
       alert("이 브라우저에서는 음성 인식을 지원하지 않습니다.");
       return;
     }
-
     const recognition = new SpeechRecognition();
     recognitionRef.current = recognition;
     recognition.lang = 'ko-KR';
     recognition.interimResults = true;
     recognition.continuous = false;
-
     recognition.onstart = () => setIsRecording(true);
     recognition.onresult = (event: any) => {
       const currentTranscript = Array.from(event.results).map((result: any) => result[0].transcript).join('');
@@ -203,7 +195,6 @@ export default function Home() {
         <div className="p-6">
           <div className="mb-8 border-4 border-green-100 rounded-2xl overflow-hidden shadow-inner relative">
             
-            {/* 💡 [신규 추가] 지도 위에 떠 있는 폼나는 주소 검색창 */}
             <div className="absolute top-4 left-4 right-4 z-10 flex gap-2 shadow-lg">
               <input 
                 type="text"
@@ -229,7 +220,7 @@ export default function Home() {
               <Map
                 center={mapCenter}
                 isPanto={true} 
-                style={{ width: "100%", height: "450px" }} // 지도를 쪼끔 더 크게 키웠습니다!
+                style={{ width: "100%", height: "450px" }} 
                 level={mapLevel} 
                 mapTypeId={3}
               >
@@ -275,26 +266,34 @@ export default function Home() {
                   );
                 })}
 
+                {/* 💡 [핵심 수정] 거슬리던 마커 텍스트를 빼고 깔끔하게 깜빡이는 빨간 점으로 변경! */}
                 {myLocation && (
-                  <MapMarker position={myLocation}>
-                    <div className="p-1 text-red-500 font-bold text-sm bg-white rounded-full px-2 border-2 border-red-500 shadow-md">
-                      📍 검색/현재위치
-                    </div>
-                  </MapMarker>
+                  <CustomOverlayMap position={myLocation}>
+                    <div className="w-5 h-5 bg-red-500 rounded-full border-4 border-white shadow-lg animate-pulse" />
+                  </CustomOverlayMap>
                 )}
               </Map>
             )}
 
-            <button 
-              onClick={handleGpsSearch}
-              disabled={isGpsLoading}
-              className="absolute bottom-4 right-4 bg-white hover:bg-gray-50 border-2 border-blue-500 text-blue-700 px-4 py-3 rounded-2xl text-sm font-black shadow-2xl z-10 flex items-center gap-2 transition-transform transform hover:scale-105 active:scale-95"
-            >
-              {isGpsLoading ? '📡 GPS 연결 중...' : '🎯 내 위치로 이동 (GPS)'}
-            </button>
+            {/* 💡 [신규 추가] 지도 우측 하단 버튼 모음 (로드뷰 + 내 위치) */}
+            <div className="absolute bottom-4 right-4 z-10 flex flex-col gap-2">
+              <button 
+                onClick={openRoadview}
+                className="bg-white hover:bg-gray-50 border-2 border-indigo-500 text-indigo-700 px-4 py-3 rounded-2xl text-sm font-black shadow-2xl flex items-center justify-center gap-2 transition-transform transform hover:scale-105 active:scale-95"
+              >
+                🛣️ 주변 로드뷰 보기
+              </button>
+              <button 
+                onClick={handleGpsSearch}
+                disabled={isGpsLoading}
+                className="bg-white hover:bg-gray-50 border-2 border-blue-500 text-blue-700 px-4 py-3 rounded-2xl text-sm font-black shadow-2xl flex items-center justify-center gap-2 transition-transform transform hover:scale-105 active:scale-95"
+              >
+                {isGpsLoading ? '📡 GPS 연결 중...' : '🎯 내 위치로 이동 (GPS)'}
+              </button>
+            </div>
           </div>
 
-          {/* 이하 날씨 데이터와 조언 영역 */}
+          {/* 이하 코드 동일 (데이터 및 음성 일지) */}
           {data && (
             <>
               <div className="grid grid-cols-3 gap-4 text-center mb-8 bg-green-100/50 rounded-2xl p-5 border border-green-100">
@@ -321,7 +320,6 @@ export default function Home() {
             </>
           )}
 
-          {/* AI 음성 영농 일지 섹션 */}
           <div className="border-t-2 border-dashed border-gray-200 pt-8 mt-8 text-center">
             <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center justify-center gap-2">
               🎙️ AI 스마트 영농 일지
@@ -337,14 +335,12 @@ export default function Home() {
               >
                 {isRecording ? '🔴 마이크 끄기 (말씀하세요...)' : '🎙️ 음성으로 일지 쓰기'}
               </button>
-
               <textarea 
                 value={voiceText}
                 onChange={(e) => setVoiceText(e.target.value)}
                 placeholder="마이크 버튼을 누르고 '오늘 잡초 뽑고 농약 2통 살포 완료' 라고 말해보세요."
                 className="w-full p-4 rounded-xl border-2 border-indigo-200 focus:border-indigo-500 outline-none resize-none h-24 text-gray-700 font-medium mb-4 shadow-inner bg-white"
               />
-              
               <button 
                 onClick={saveDiary}
                 disabled={!voiceText.trim()}
@@ -353,7 +349,6 @@ export default function Home() {
                 💾 {activeSector} 작업 일지 저장하기
               </button>
             </div>
-
             {diaryLogs.length > 0 && (
               <div className="mt-6 text-left">
                 <h3 className="text-lg font-bold text-gray-700 mb-3 flex items-center gap-2">

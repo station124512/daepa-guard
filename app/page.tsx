@@ -6,6 +6,8 @@ import { Map, Polygon, CustomOverlayMap, MapMarker, useKakaoLoader } from 'react
 export default function Home() {
   const [mapLoading, mapError] = useKakaoLoader({
     appkey: process.env.NEXT_PUBLIC_KAKAO_APP_KEY as string,
+    // 💡 [핵심 추가] 카카오 주소 검색 엔진(services)을 불러옵니다!
+    libraries: ['services'], 
   });
 
   const [data, setData] = useState<any>(null);
@@ -19,11 +21,13 @@ export default function Home() {
   const [isGpsLoading, setIsGpsLoading] = useState(false);
   const [mapLevel, setMapLevel] = useState(4); 
 
-  // 💡 [음성 인식용 상태 변수들 추가]
+  // 💡 [신규 추가] 주소 검색용 상태 변수
+  const [searchAddress, setSearchAddress] = useState("");
+
   const [isRecording, setIsRecording] = useState(false);
   const [voiceText, setVoiceText] = useState("");
   const [diaryLogs, setDiaryLogs] = useState<string[]>([]);
-  const recognitionRef = useRef<any>(null); // 마이크 끄기 제어용
+  const recognitionRef = useRef<any>(null);
 
   const sectorPaths = {
     'A (샘플)': [
@@ -47,7 +51,7 @@ export default function Home() {
   };
 
   useEffect(() => {
-    if (activeSector === '내 농장(GPS)' && myLocation) return;
+    if (activeSector.includes('내 농장') || activeSector.includes('검색된')) return;
     setLoading(true);
     const { lat, lng } = sectorCenters[activeSector as keyof typeof sectorCenters] || sectorCenters['A (샘플)'];
     fetchWeatherData(lat, lng, activeSector);
@@ -72,11 +76,44 @@ export default function Home() {
         console.error(err);
         setData({
           weather: { temp: '26.7', rain: '0', humidity: '94' },
-          riskScore: sectorName.includes('내 농장') ? 85 : 40,
+          riskScore: sectorName.includes('내 농장') || sectorName.includes('검색') ? 85 : 40,
           recommendation: `${sectorName} 통신 지연. 기본 안전 모드로 구동됩니다.`
         });
         setLoading(false);
       });
+  };
+
+  // 💡 [핵심 기능] 주소를 입력하면 좌표로 변환해서 지도를 이동시키는 함수
+  const handleAddressSearch = () => {
+    if (!searchAddress.trim()) return;
+
+    // 카카오맵 API가 로드되었는지 확인
+    if (!(window as any).kakao || !(window as any).kakao.maps || !(window as any).kakao.maps.services) {
+      alert("지도 서비스를 불러오는 중입니다. 잠시 후 다시 시도해주세요.");
+      return;
+    }
+
+    const geocoder = new (window as any).kakao.maps.services.Geocoder();
+
+    // 주소로 좌표를 검색합니다
+    geocoder.addressSearch(searchAddress, function(result: any, status: any) {
+      if (status === (window as any).kakao.maps.services.Status.OK) {
+        const lat = parseFloat(result[0].y);
+        const lng = parseFloat(result[0].x);
+
+        setMapCenter({ lat, lng }); // 지도 카메라 이동
+        setMyLocation({ lat, lng }); // 빨간 핀 꽂기
+        setActiveSector(`검색: ${searchAddress.substring(0, 8)}...`); // 구역 이름 변경
+        
+        // 검색된 곳으로 부드럽게 줌인!
+        setTimeout(() => setMapLevel(1), 600);
+        
+        setLoading(true);
+        fetchWeatherData(lat, lng, '검색된 농장');
+      } else {
+        alert("주소를 찾을 수 없습니다. 시/군/구 동/면/리를 포함한 정확한 주소를 입력해주세요.");
+      }
+    });
   };
 
   const handleGpsSearch = () => {
@@ -115,7 +152,6 @@ export default function Home() {
     setCompletedSectors(prev => Array.from(new Set([...prev, activeSector])));
   };
 
-  // 💡 [핵심 기능] AI 음성 인식 로직
   const handleVoiceRecord = () => {
     if (isRecording) {
       recognitionRef.current?.stop();
@@ -125,47 +161,33 @@ export default function Home() {
 
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      alert("이 브라우저에서는 음성 인식을 지원하지 않습니다. 크롬(Chrome)이나 안드로이드 스마트폰을 사용해주세요!");
+      alert("이 브라우저에서는 음성 인식을 지원하지 않습니다.");
       return;
     }
 
     const recognition = new SpeechRecognition();
     recognitionRef.current = recognition;
-    recognition.lang = 'ko-KR'; // 한국어 인식 모드
-    recognition.interimResults = true; // 말하는 도중에도 글씨 나오게
-    recognition.continuous = false; // 한 번 말하고 쉬면 자동 종료
+    recognition.lang = 'ko-KR';
+    recognition.interimResults = true;
+    recognition.continuous = false;
 
     recognition.onstart = () => setIsRecording(true);
-    
     recognition.onresult = (event: any) => {
-      const currentTranscript = Array.from(event.results)
-        .map((result: any) => result[0].transcript)
-        .join('');
+      const currentTranscript = Array.from(event.results).map((result: any) => result[0].transcript).join('');
       setVoiceText(currentTranscript);
     };
-
-    recognition.onerror = (event: any) => {
-      console.error(event.error);
-      setIsRecording(false);
-    };
-
-    recognition.onend = () => {
-      setIsRecording(false);
-    };
-
+    recognition.onerror = () => setIsRecording(false);
+    recognition.onend = () => setIsRecording(false);
     recognition.start();
   };
 
-  // 💡 음성 텍스트를 일지에 저장하는 로직
   const saveDiary = () => {
     if (!voiceText.trim()) return;
     const now = new Date();
     const timestamp = `${now.getMonth() + 1}/${now.getDate()} ${now.getHours()}:${now.getMinutes().toString().padStart(2, '0')}`;
-    
-    // [8/13 16:30] A구역 : 잎마름병 약 2통 살포함
     const newLog = `[${timestamp}] ${activeSector} : ${voiceText}`;
     setDiaryLogs(prev => [newLog, ...prev]);
-    setVoiceText(""); // 저장 후 입력창 초기화
+    setVoiceText("");
   };
 
   if (loading && !data) return <div className="flex h-screen items-center justify-center text-xl font-bold text-green-700">농장 데이터를 분석 중입니다... 🚜</div>;
@@ -180,6 +202,25 @@ export default function Home() {
 
         <div className="p-6">
           <div className="mb-8 border-4 border-green-100 rounded-2xl overflow-hidden shadow-inner relative">
+            
+            {/* 💡 [신규 추가] 지도 위에 떠 있는 폼나는 주소 검색창 */}
+            <div className="absolute top-4 left-4 right-4 z-10 flex gap-2 shadow-lg">
+              <input 
+                type="text"
+                value={searchAddress}
+                onChange={(e) => setSearchAddress(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleAddressSearch()}
+                placeholder="밭 주소를 입력하세요 (예: 목포시 상동 123)"
+                className="flex-1 px-4 py-3 rounded-xl border-2 border-green-500 font-bold text-gray-800 outline-none bg-white/95 focus:bg-white transition-colors"
+              />
+              <button 
+                onClick={handleAddressSearch}
+                className="bg-green-600 hover:bg-green-700 text-white font-black px-6 py-3 rounded-xl transition-transform active:scale-95"
+              >
+                검색
+              </button>
+            </div>
+
             {mapLoading ? (
               <div className="h-80 bg-gray-100 flex items-center justify-center font-bold text-gray-400">지도를 불러오는 중입니다...</div>
             ) : mapError ? (
@@ -188,7 +229,7 @@ export default function Home() {
               <Map
                 center={mapCenter}
                 isPanto={true} 
-                style={{ width: "100%", height: "400px" }}
+                style={{ width: "100%", height: "450px" }} // 지도를 쪼끔 더 크게 키웠습니다!
                 level={mapLevel} 
                 mapTypeId={3}
               >
@@ -237,7 +278,7 @@ export default function Home() {
                 {myLocation && (
                   <MapMarker position={myLocation}>
                     <div className="p-1 text-red-500 font-bold text-sm bg-white rounded-full px-2 border-2 border-red-500 shadow-md">
-                      📍 내 농장
+                      📍 검색/현재위치
                     </div>
                   </MapMarker>
                 )}
@@ -249,10 +290,11 @@ export default function Home() {
               disabled={isGpsLoading}
               className="absolute bottom-4 right-4 bg-white hover:bg-gray-50 border-2 border-blue-500 text-blue-700 px-4 py-3 rounded-2xl text-sm font-black shadow-2xl z-10 flex items-center gap-2 transition-transform transform hover:scale-105 active:scale-95"
             >
-              {isGpsLoading ? '📡 GPS 연결 중...' : '🎯 내 농장 위치 찾기'}
+              {isGpsLoading ? '📡 GPS 연결 중...' : '🎯 내 위치로 이동 (GPS)'}
             </button>
           </div>
 
+          {/* 이하 날씨 데이터와 조언 영역 */}
           {data && (
             <>
               <div className="grid grid-cols-3 gap-4 text-center mb-8 bg-green-100/50 rounded-2xl p-5 border border-green-100">
@@ -279,7 +321,7 @@ export default function Home() {
             </>
           )}
 
-          {/* 👇 신규 추가: 🎤 AI 음성 영농 일지 섹션 👇 */}
+          {/* AI 음성 영농 일지 섹션 */}
           <div className="border-t-2 border-dashed border-gray-200 pt-8 mt-8 text-center">
             <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center justify-center gap-2">
               🎙️ AI 스마트 영농 일지
@@ -312,7 +354,6 @@ export default function Home() {
               </button>
             </div>
 
-            {/* 저장된 일지 목록 */}
             {diaryLogs.length > 0 && (
               <div className="mt-6 text-left">
                 <h3 className="text-lg font-bold text-gray-700 mb-3 flex items-center gap-2">
@@ -328,8 +369,6 @@ export default function Home() {
               </div>
             )}
           </div>
-          {/* 👆 신규 추가 끝 👆 */}
-
         </div>
       </div>
     </main>

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Map, Polygon, CustomOverlayMap, MapMarker, useKakaoLoader } from 'react-kakao-maps-sdk';
 
 export default function Home() {
@@ -18,6 +18,12 @@ export default function Home() {
   const [myLocation, setMyLocation] = useState<{lat: number, lng: number} | null>(null);
   const [isGpsLoading, setIsGpsLoading] = useState(false);
   const [mapLevel, setMapLevel] = useState(4); 
+
+  // 💡 [음성 인식용 상태 변수들 추가]
+  const [isRecording, setIsRecording] = useState(false);
+  const [voiceText, setVoiceText] = useState("");
+  const [diaryLogs, setDiaryLogs] = useState<string[]>([]);
+  const recognitionRef = useRef<any>(null); // 마이크 끄기 제어용
 
   const sectorPaths = {
     'A (샘플)': [
@@ -85,15 +91,10 @@ export default function Home() {
         const lat = position.coords.latitude;
         const lng = position.coords.longitude;
         
-        // 1. 카메라 중심을 내 위치로 먼저 부드럽게 이동시킵니다.
         setMapCenter({ lat, lng }); 
         setMyLocation({ lat, lng }); 
         setActiveSector('내 농장(GPS)'); 
-        
-        // 💡 2. [시간차 공격!] 0.6초 뒤에 지도를 1레벨로 확! 줌인시킵니다.
-        setTimeout(() => {
-          setMapLevel(1); 
-        }, 600);
+        setTimeout(() => setMapLevel(1), 600);
         
         setLoading(true);
         fetchWeatherData(lat, lng, '내 농장(GPS)');
@@ -112,12 +113,59 @@ export default function Home() {
     const actionMessage = `${now.getMonth() + 1}월 ${now.getDate()}일 ${now.getHours()}시 ${now.getMinutes()}분 - ${activeSector} 방제 완료!`;
     setActionLog(actionMessage);
     setCompletedSectors(prev => Array.from(new Set([...prev, activeSector])));
+  };
 
-    fetch('/api/action-log', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sector: activeSector, action_message: actionMessage }),
-    }).catch(console.error);
+  // 💡 [핵심 기능] AI 음성 인식 로직
+  const handleVoiceRecord = () => {
+    if (isRecording) {
+      recognitionRef.current?.stop();
+      setIsRecording(false);
+      return;
+    }
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("이 브라우저에서는 음성 인식을 지원하지 않습니다. 크롬(Chrome)이나 안드로이드 스마트폰을 사용해주세요!");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognitionRef.current = recognition;
+    recognition.lang = 'ko-KR'; // 한국어 인식 모드
+    recognition.interimResults = true; // 말하는 도중에도 글씨 나오게
+    recognition.continuous = false; // 한 번 말하고 쉬면 자동 종료
+
+    recognition.onstart = () => setIsRecording(true);
+    
+    recognition.onresult = (event: any) => {
+      const currentTranscript = Array.from(event.results)
+        .map((result: any) => result[0].transcript)
+        .join('');
+      setVoiceText(currentTranscript);
+    };
+
+    recognition.onerror = (event: any) => {
+      console.error(event.error);
+      setIsRecording(false);
+    };
+
+    recognition.onend = () => {
+      setIsRecording(false);
+    };
+
+    recognition.start();
+  };
+
+  // 💡 음성 텍스트를 일지에 저장하는 로직
+  const saveDiary = () => {
+    if (!voiceText.trim()) return;
+    const now = new Date();
+    const timestamp = `${now.getMonth() + 1}/${now.getDate()} ${now.getHours()}:${now.getMinutes().toString().padStart(2, '0')}`;
+    
+    // [8/13 16:30] A구역 : 잎마름병 약 2통 살포함
+    const newLog = `[${timestamp}] ${activeSector} : ${voiceText}`;
+    setDiaryLogs(prev => [newLog, ...prev]);
+    setVoiceText(""); // 저장 후 입력창 초기화
   };
 
   if (loading && !data) return <div className="flex h-screen items-center justify-center text-xl font-bold text-green-700">농장 데이터를 분석 중입니다... 🚜</div>;
@@ -139,7 +187,7 @@ export default function Home() {
             ) : (
               <Map
                 center={mapCenter}
-                isPanto={true} // 💡 마법의 속성: 지도가 뚝! 안 끊기고 스무스하게 쓱~ 날아갑니다.
+                isPanto={true} 
                 style={{ width: "100%", height: "400px" }}
                 level={mapLevel} 
                 mapTypeId={3}
@@ -161,7 +209,6 @@ export default function Home() {
                         onClick={() => { 
                           setActiveSector(sector); 
                           setMapCenter(sectorCenters[sector]); 
-                          // 💡 다시 샘플 구역 누르면 멀리서 보이게 줌 아웃 (레벨 4)
                           setMapLevel(4);
                           setActionLog(null); 
                         }}
@@ -223,14 +270,6 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="mb-10 text-center">
-                <h2 className="text-lg font-bold text-blue-700 mb-3">{activeSector} 잡초 발아 위험도</h2>
-                <div className="text-6xl font-black text-red-500 mb-6">{data.riskScore} <span className="text-2xl text-gray-400">/ 100</span></div>
-                <div className="w-full bg-gray-100 rounded-full h-5 shadow-inner overflow-hidden">
-                  <div className="bg-gradient-to-r from-orange-400 to-red-500 h-5 rounded-full transition-all duration-1000 ease-out" style={{ width: `${data.riskScore}%` }}></div>
-                </div>
-              </div>
-
               <div className="mb-8">
                 <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">🤖 AI 농업 전문가 조언</h2>
                 <div className="text-gray-700 leading-relaxed whitespace-pre-line bg-gray-50 p-6 rounded-2xl border border-gray-200 text-lg shadow-sm">
@@ -240,20 +279,57 @@ export default function Home() {
             </>
           )}
 
-          <div className="border-t-2 border-dashed border-gray-200 pt-8 text-center">
-            {completedSectors.includes(activeSector) ? (
-              <div className="w-full md:w-auto bg-blue-100 border-2 border-blue-500 text-blue-800 font-bold py-4 px-12 rounded-2xl text-xl shadow-inner mx-auto inline-block">
-                ✅ {activeSector} 방제 완료
-              </div>
-            ) : (
-              <button 
-                onClick={handleAction}
-                className="w-full md:w-auto bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-12 rounded-2xl text-xl shadow-lg transition-transform transform hover:scale-105 active:scale-95 mx-auto"
+          {/* 👇 신규 추가: 🎤 AI 음성 영농 일지 섹션 👇 */}
+          <div className="border-t-2 border-dashed border-gray-200 pt-8 mt-8 text-center">
+            <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center justify-center gap-2">
+              🎙️ AI 스마트 영농 일지
+            </h2>
+            <div className="bg-indigo-50 border border-indigo-100 p-6 rounded-2xl shadow-sm text-left">
+              <button
+                onClick={handleVoiceRecord}
+                className={`w-full py-4 px-6 rounded-2xl font-black text-white text-lg transition-all shadow-lg flex items-center justify-center gap-3 mb-4 ${
+                  isRecording 
+                    ? 'bg-red-500 hover:bg-red-600 animate-pulse' 
+                    : 'bg-indigo-600 hover:bg-indigo-700 transform hover:scale-105 active:scale-95'
+                }`}
               >
-                🚜 {activeSector} 방제 완료 보고
+                {isRecording ? '🔴 마이크 끄기 (말씀하세요...)' : '🎙️ 음성으로 일지 쓰기'}
               </button>
+
+              <textarea 
+                value={voiceText}
+                onChange={(e) => setVoiceText(e.target.value)}
+                placeholder="마이크 버튼을 누르고 '오늘 잡초 뽑고 농약 2통 살포 완료' 라고 말해보세요."
+                className="w-full p-4 rounded-xl border-2 border-indigo-200 focus:border-indigo-500 outline-none resize-none h-24 text-gray-700 font-medium mb-4 shadow-inner bg-white"
+              />
+              
+              <button 
+                onClick={saveDiary}
+                disabled={!voiceText.trim()}
+                className="w-full bg-gray-800 hover:bg-black text-white font-bold py-4 rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-md"
+              >
+                💾 {activeSector} 작업 일지 저장하기
+              </button>
+            </div>
+
+            {/* 저장된 일지 목록 */}
+            {diaryLogs.length > 0 && (
+              <div className="mt-6 text-left">
+                <h3 className="text-lg font-bold text-gray-700 mb-3 flex items-center gap-2">
+                  📋 최근 작업 기록
+                </h3>
+                <ul className="space-y-3">
+                  {diaryLogs.map((log, idx) => (
+                    <li key={idx} className="bg-white px-4 py-3 rounded-xl border-l-4 border-indigo-500 shadow-sm text-gray-700 font-medium">
+                      {log}
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
           </div>
+          {/* 👆 신규 추가 끝 👆 */}
+
         </div>
       </div>
     </main>
